@@ -146,9 +146,68 @@ average 11,332 leaves, pushing a 1,000-row explanation from ~5 minutes to
 
 ## Results
 
-See **[`docs/MODEL_CARD.md`](docs/MODEL_CARD.md)**, regenerated from
+Customer-disjoint holdout, 20,000 rows:
+
+| Metric | Value |
+|---|---|
+| Accuracy | **69.78%** |
+| Majority-class baseline | 52.90% |
+| Lift over baseline | **+16.88 pts** |
+| Macro-F1 | **67.83%** |
+| Macro AUC (OvR) | 0.848 |
+| Expected calibration error | **0.0116** (from 0.0265 uncalibrated) |
+| CV macro-F1 (5-fold grouped) | 66.81% ± 0.39 |
+
+```
+              precision    recall  f1-score   support
+        Poor      0.713     0.669     0.691      5726
+    Standard      0.741     0.729     0.735     10580
+        Good      0.572     0.652     0.609      3694
+```
+
+The minority "Good" class remains the weak spot at 0.609 F1 — worth knowing,
+because in a lending context those are creditworthy applicants being sent to
+referral or decline.
+
+### Fairness
+
+All three dimensions fail the four-fifths rule, but they fail differently,
+and the difference is the point:
+
+| Dimension | Selection DI | Label base-rate DI | Amplification |
+|---|---|---|---|
+| `age_band` | 0.436 | 0.473 | 0.92 — slightly widens |
+| `Occupation` | 0.618 | 0.586 | 1.05 — narrows |
+| `income_quintile` | **0.170** | 0.265 | **0.64 — widens substantially** |
+
+Reporting only the first column would show three identical-looking failures.
+Against the base rates it is clear that the age and occupation disparities
+are largely inherited from labels that are already skewed, while
+**`income_quintile` is where the model amplifies** — Q1 applicants are
+selected at 0.068 against a 0.087 base rate, Q5 at 0.400 against 0.327.
+That is the one to investigate.
+
+`Unknown` buckets are excluded from the ratios. For `age_band` that bucket is
+the 8,482 records with a corrupt age; it is a data-quality artifact, not a
+protected class, and including it would report a disparity against people who
+do not form a group.
+
+Full numbers: **[`docs/MODEL_CARD.md`](docs/MODEL_CARD.md)**, regenerated from
 `reports/metrics.json` on every training run so it cannot drift from what the
 model actually produced.
+
+### Reason codes
+
+A declined applicant, real output from `/score`:
+
+```
+band=Poor  decision=decline  adverse=True
+probabilities: {'Poor': 0.662, 'Standard': 0.336, 'Good': 0.002}
+  Average days past due on payments      (contribution 0.0586)
+  Interest rate on existing credit       (contribution 0.0577)
+  Recent change in credit limit          (contribution 0.0462)
+  Mix of credit types held               (contribution 0.0294)
+```
 
 ## License
 
