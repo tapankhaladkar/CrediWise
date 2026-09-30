@@ -130,8 +130,9 @@ inputs.
 
 **`Credit_Mix` is declared, not hidden.** It is a bureau-assigned
 credit-quality rating, so predicting a credit band from it is partly circular.
-`make train-nobureau` quantifies the dependency at **-1.03pp accuracy and
--2.31 macro-F1**.
+`make train-nobureau` quantifies the dependency at **-1.03pp accuracy**,
+which understates it: the whole cost lands on Good-class recall, which drops
+**0.652 to 0.491**. See [`docs/FEATURE_CONTRACT.md`](docs/FEATURE_CONTRACT.md).
 
 **Features were dropped on evidence, not convenience.** `Type_of_Loan`
 multi-hot measured at -0.33pp macro-F1 during the audit, so it stays out.

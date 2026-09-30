@@ -30,16 +30,33 @@ from a rating. It is the third most important feature in the model.
 
 The dependency is quantified rather than hidden:
 
-Measured with the shipped pipeline on the grouped holdout set:
+Measured end to end with `make train` vs `make train-nobureau`, both
+calibrated, on the grouped holdout set:
 
-| Variant | Accuracy | Macro-F1 |
-|---|---|---|
-| With `Credit_Mix` | 69.86% | 67.65 |
-| **Without** (`--no-bureau`) | **68.83%** | **65.34** |
-| Cost of dropping it | **-1.03pp** | **-2.31** |
+| Variant | Accuracy | Macro-F1 | Macro AUC |
+|---|---|---|---|
+| With `Credit_Mix` | 69.78% | 67.83 | 0.848 |
+| **Without** (`--no-bureau`) | **68.75%** | **65.38** | **0.842** |
+| Cost of dropping it | **-1.03pp** | **-2.45** | -0.006 |
 
-Note the macro-F1 cost (-2.31) is more than twice the accuracy cost, because
-the loss falls mainly on the minority classes.
+**The headline accuracy figure badly understates the impact.** The entire
+cost lands on one class:
+
+| Class | Recall with | Recall without | Change |
+|---|---|---|---|
+| Poor | 0.669 | 0.672 | +0.003 |
+| Standard | 0.729 | 0.764 | +0.035 |
+| **Good** | **0.652** | **0.491** | **-0.161** |
+
+Losing the bureau feature costs a quarter of the model's ability to identify
+creditworthy applicants. In lending terms that is turning away good
+customers, which a 1-point accuracy drop does not convey.
+
+One qualification worth noting: **AUC barely moves** (0.884 to 0.878 for the
+Good class). The model's ability to *rank* applicants is almost intact; what
+degrades is where the decision boundary falls. Much of the loss is therefore
+likely recoverable by re-tuning the approve threshold for the no-bureau
+variant rather than accepting it as given. That has not been done.
 
 If a deployment cannot obtain a bureau credit-mix rating before scoring, train
 and serve the `--no-bureau` variant and accept that cost. Do not serve
