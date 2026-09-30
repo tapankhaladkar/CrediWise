@@ -13,3 +13,5 @@ dist/
 artifacts/*.joblib
 reports/*.json
 reports/*.csv
+!artifacts/.gitkeep
+!reports/.gitkeep

@@ -264,16 +264,26 @@ Every reported figure was one 80/20 draw with no error bar. **Closed by**
 
 ### 15. `Credit_Mix` is a circular feature
 
-`Credit_Mix` is a bureau-assigned assessment of credit quality and the third
-most important feature — partly predicting a credit rating from a credit
-rating. Measured cost of removing it: **-1.4pp accuracy, -2.6 macro-F1**.
+`Credit_Mix` is a bureau-assigned assessment of credit quality and one of the
+most important features — partly predicting a credit rating from a credit
+rating. Measured with the shipped pipeline:
+
+| Variant | Accuracy | Macro-F1 |
+|---|---|---|
+| With `Credit_Mix` | 69.86% | 67.65 |
+| Without (`--no-bureau`) | 68.83% | 65.34 |
+| **Cost** | **-1.03pp** | **-2.31** |
+
+The macro-F1 cost is more than twice the accuracy cost: the loss lands on the
+minority classes.
 
 **Closed by** declaring it a bureau input in `docs/FEATURE_CONTRACT.md` and
 shipping a `--no-bureau` variant so the dependency is quantified, not hidden.
 
 ### 16. Two informative features discarded rather than parsed — *partly revised*
 
-Both were dropped for being awkward strings. Measured under a grouped split:
+Both were dropped for being awkward strings. Measured under a grouped split
+during the audit, with within-customer imputation and fully grown trees:
 
 | Change | Accuracy | Macro-F1 |
 |---|---|---|
@@ -286,6 +296,20 @@ The original finding assumed both were worth recovering. Only
 `Credit_History_Age` is: `Type_of_Loan` adds 8 sparse indicators that dilute
 the signal and **costs 0.33pp**. It stays dropped — now on evidence rather
 than convenience.
+
+Re-measured against the **shipped** pipeline (median imputation,
+`min_samples_leaf=20`), the gain from `Credit_History_Age` is smaller than the
+exploratory figure suggested:
+
+| Variant | Accuracy | Macro-F1 |
+|---|---|---|
+| With `Credit_History_Months` | 69.86% | 67.65 |
+| Without | 69.74% | 67.53 |
+| **Gain** | **+0.11pp** | **+0.12** |
+
+Still positive and still free, but +0.11pp rather than +0.31pp. The larger
+figure was specific to the exploratory configuration and should not be quoted
+for the shipped model.
 
 ### 19. No data provenance or dictionary
 

@@ -27,9 +27,14 @@ def build_model(include_bureau: bool = True, **rf_kwargs) -> Pipeline:
     original notebook saved nothing, and its LabelEncoder mappings were
     unrecoverable once the kernel died (audit #25).
     """
+    # min_samples_leaf=20 rather than the sklearn default of 1: it scores
+    # marginally better here (67.65 vs 67.41 macro-F1) and keeps the trees
+    # shallow enough for SHAP to stay tractable. Fully grown trees average
+    # 11,332 leaves, which pushes a 2,000-row explanation from 11 minutes
+    # to 94.
     params = dict(
         n_estimators=300,
-        min_samples_leaf=2,
+        min_samples_leaf=20,
         n_jobs=-1,
         random_state=cfg.RANDOM_STATE,
         class_weight=None,

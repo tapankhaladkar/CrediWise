@@ -32,10 +32,10 @@ DROPPED_COLUMNS = {
     "ID": "row identifier, no predictive content",
     "Customer_ID": "panel key -- used for grouping, never as a feature",
     "Month": "artifact of the panel layout; costs nothing to drop (audit #6)",
-    "Age": "ECOA-protected basis; costs nothing to drop, retained only as a "
-           "fairness audit dimension (audit #18)",
-    "Type_of_Loan": "multi-hot encoding measured at -0.33pp macro-F1; dropped "
-                    "on evidence rather than convenience (audit #16)",
+    "Age": "ECOA-protected basis; removal measured at -0.02pp (noise), "
+           "retained only as a fairness audit dimension (audit #18)",
+    "Type_of_Loan": "multi-hot encoding measured at -0.33pp macro-F1 during "
+                    "the audit; dropped on evidence (audit #16)",
 }
 
 #: Values that stand in for "missing" in the raw file. Each was found by
