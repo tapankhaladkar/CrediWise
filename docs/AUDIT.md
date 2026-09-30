@@ -37,7 +37,7 @@ honest figure is ~70%.
 | 20 | README describes a project that does not exist | High | Closed |
 | 21 | Two stacked READMEs | Low | Closed |
 | 22 | Missing every standard repo file | Medium | Closed |
-| 23 | 31 MB CSV committed to git | Medium | Partly closed |
+| 23 | 31 MB CSV committed to git | Medium | Closed |
 | 24 | Notebook-only, no reusable code | Medium | Closed |
 | 25 | No model persistence or inference path | Medium | Closed |
 | 26 | Three commits, all untraceable | Low | Closed going forward |
@@ -320,12 +320,32 @@ for the shipped model.
 No `requirements.txt`, `.gitignore`, `LICENSE`, tests or CI; `git ls-files`
 returned exactly three files. **Closed by** Phase 0.
 
-### 23. 31 MB CSV committed to git — *partly closed*
+### 23. 31 MB CSV committed to git
 
-The working copy is now the PII-stripped `data/credit_score.csv`. **The
-original file remains in git history**; fully purging it requires a history
-rewrite (`git filter-repo`), which is cheap at this commit count but has not
-been done because it rewrites published hashes. Tracked as open.
+The working copy is the PII-stripped `data/credit_score.csv`, and the original
+has been purged from history with `git filter-repo`, rewriting every commit
+hash in the repository.
+
+Removing the CSV alone turned out to be insufficient. The notebook's **stored
+outputs** also carried PII: cell 2 runs `df.head()` *before* the identifier
+columns are dropped, so the committed output displayed one customer's name and
+SSN across five rows. This survived the first pass, because it lives in a
+different blob from the one that was removed.
+
+A second `--replace-text` pass redacted it, so both are now gone:
+
+| Source | Exposure | Action |
+|---|---|---|
+| `credit_score.csv` | 12,501 SSN-shaped values, 10,139 names | Path removed from all history |
+| `notebooks/Credit_Score_original.ipynb` | 1 name, 1 SSN in cell 2's stored output | Redacted to `REDACTED_NAME` / `XXX-XX-XXXX` |
+
+Verified afterwards: zero commits in the repository match an SSN pattern or
+the customer name, and the final tree is otherwise byte-identical.
+
+**The lesson generalises.** Notebook outputs are a PII surface in their own
+right. Any notebook that displays a dataframe before dropping identifiers will
+embed whatever it printed, and stripping the source file does not touch it.
+Clear outputs, or run the drop before the first `head()`.
 
 ### 24. Notebook-only, no reusable code
 
