@@ -195,8 +195,10 @@ happened to hold, but was drawn from invalid numbers.
 
 No feature is removed on the basis of the VIF table; it is printed and ignored.
 Since all true VIFs are below 5, none would be dropped anyway — the step is
-decorative. **Closed by** removing it from the modelling path; collinearity is
-documented in the model card instead.
+decorative. **Closed by** removing it from the modelling path. The corrected
+collinearity numbers are recorded in finding #3 above (all VIFs between 1.00
+and 3.05), which is the durable record; the pipeline does not recompute them
+at training time.
 
 ### 5. Imputation crosses customer boundaries and precedes the split
 
@@ -237,7 +239,20 @@ InvalidParameterError: 'max_features' ... Got 'auto' instead.
 ```
 
 `max_features='auto'` was removed from scikit-learn. The warning was emitted
-and not acted on. **Closed by** removing the dead parameter.
+and not acted on.
+
+**Closed by** removing the broken search entirely rather than repairing it.
+That closes the defect — nothing now fails silently — but it is worth being
+explicit that **the project currently has no automated hyperparameter
+search.** The two parameters that matter were set from targeted measurements
+instead, each recorded in this register:
+
+| Parameter | Value | Basis |
+|---|---|---|
+| `min_samples_leaf` | 20 | 67.65 vs 67.41 macro-F1 against fully grown trees, and keeps SHAP tractable |
+| `n_estimators` | 300 | Standard; not tuned |
+
+See "Known gaps" at the end of this document.
 
 ### 9. No random seeds on tree models
 
@@ -374,3 +389,33 @@ rewrite.
 `Initial commit` -> `Updated the dataset and code` (101,399 lines) -> `Update
 README.md`. **Closed going forward**; this rebuild is committed in reviewable
 phases.
+
+---
+
+## Known gaps
+
+Closing the 26 findings did not make the project complete. These are open by
+choice, recorded so they are not mistaken for oversights.
+
+1. **No automated hyperparameter search.** The broken `GridSearchCV` was
+   removed (#8) and not replaced. `min_samples_leaf` and the bureau-feature
+   decision were set from measurements documented here, but no systematic
+   search has been run. A grouped-CV search is the obvious next step and
+   would likely find another point or two.
+
+2. **No temporal validation.** The data covers one 8-month window and the
+   split is by customer, not by time. Nothing here measures performance under
+   drift, which is the failure mode a deployed credit model actually hits.
+   The `Month` column would support a forward-chaining split.
+
+3. **Fairness is bounded by the dataset.** Six of seven ECOA protected bases
+   are absent (#18, `docs/FAIRNESS.md`). The machinery is built and would
+   port to a dataset carrying real demographics; the inputs are what is
+   missing.
+
+4. **Label provenance is unknown.** The source does not document how credit
+   standing was assigned (#19). Every accuracy figure is accuracy against an
+   unexplained label.
+
+5. **No CI.** Tests exist and pass, but nothing runs them automatically on
+   push.

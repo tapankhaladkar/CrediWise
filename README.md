@@ -209,6 +209,24 @@ probabilities: {'Poor': 0.662, 'Standard': 0.336, 'Good': 0.002}
   Mix of credit types held               (contribution 0.0294)
 ```
 
+## Known gaps
+
+Closing the audit did not make this complete. Recorded in full at the end of
+[`docs/AUDIT.md`](docs/AUDIT.md), in short:
+
+- **No automated hyperparameter search.** The original notebook's broken
+  `GridSearchCV` was removed rather than repaired; the parameters that matter
+  were set from documented measurements instead. A grouped-CV search is the
+  obvious next step.
+- **No temporal validation.** The split is by customer, not by time, so
+  nothing here measures drift — the failure mode a deployed credit model
+  actually hits.
+- **Fairness is bounded by the data**, not by the code: six of seven ECOA
+  bases are absent.
+- **Label provenance is unknown** — every accuracy figure is accuracy against
+  an unexplained label.
+- **No CI.** Tests pass but nothing runs them on push.
+
 ## License
 
 MIT. The dataset is public synthetic data — see
