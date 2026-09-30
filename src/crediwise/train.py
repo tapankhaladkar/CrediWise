@@ -41,8 +41,8 @@ def _json_safe(obj):
 
 
 def run(include_bureau: bool = True, demo_leakage: bool = False) -> dict:
-    cfg.ARTIFACT_DIR.mkdir(exist_ok=True)
-    cfg.REPORT_DIR.mkdir(exist_ok=True)
+    cfg.ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    cfg.REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
     print("Loading and cleaning...")
     raw = data_mod.load_raw()
@@ -118,7 +118,7 @@ def run(include_bureau: bool = True, demo_leakage: bool = False) -> dict:
 
     print("Computing SHAP importances...")
     sample = X.iloc[test_idx].sample(
-        min(2000, len(test_idx)), random_state=cfg.RANDOM_STATE
+        min(1000, len(test_idx)), random_state=cfg.RANDOM_STATE
     )
     explainer = Explainer(uncalibrated)
     importance = explainer.global_importance(sample)

@@ -30,13 +30,19 @@ from a rating. It is the third most important feature in the model.
 
 The dependency is quantified rather than hidden:
 
+Measured with the shipped pipeline on the grouped holdout set:
+
 | Variant | Accuracy | Macro-F1 |
 |---|---|---|
-| With `Credit_Mix` | 70.16% | 68.07 |
-| **Without** (`--no-bureau`) | **68.72%** | **65.43** |
+| With `Credit_Mix` | 69.86% | 67.65 |
+| **Without** (`--no-bureau`) | **68.83%** | **65.34** |
+| Cost of dropping it | **-1.03pp** | **-2.31** |
+
+Note the macro-F1 cost (-2.31) is more than twice the accuracy cost, because
+the loss falls mainly on the minority classes.
 
 If a deployment cannot obtain a bureau credit-mix rating before scoring, train
-and serve the `--no-bureau` variant and accept the 1.4pp cost. Do not serve
+and serve the `--no-bureau` variant and accept that cost. Do not serve
 the full model with `Credit_Mix` imputed to the median — that silently
 substitutes the population average for the single most consequential input.
 
@@ -47,9 +53,9 @@ substitutes the population average for the single most consequential input.
 | `Name`, `SSN` | Direct identifiers, removed from the dataset entirely |
 | `ID` | Row identifier, no predictive content |
 | `Customer_ID` | Panel key — used to group splits, never a feature |
-| `Age` | ECOA-protected. Removal measured at **+0.11pp**, so it is free. Retained only as a fairness audit dimension |
+| `Age` | ECOA-protected. Removal measured at **-0.02pp**, within noise, so it is free. Retained only as a fairness audit dimension |
 | `Month` | Artifact of the panel layout; the forest was assigning it 3.5% importance |
-| `Type_of_Loan` | Multi-hot encoding measured at **-0.33pp macro-F1**; dropped on evidence |
+| `Type_of_Loan` | Multi-hot encoding measured at **-0.33pp macro-F1** during the audit; dropped on evidence |
 
 ## Output
 

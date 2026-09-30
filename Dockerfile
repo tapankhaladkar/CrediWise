@@ -6,7 +6,11 @@ COPY requirements.txt pyproject.toml ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src/ ./src/
-COPY artifacts/ ./artifacts/
+
+# Artifacts are build outputs, not source. Run `make train` and mount or
+# COPY them in; until one is present /health reports "degraded" and
+# /score returns 503 rather than the container failing to build.
+RUN mkdir -p ./artifacts
 
 ENV PYTHONPATH=/app/src
 EXPOSE 8000

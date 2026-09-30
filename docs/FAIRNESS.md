@@ -50,9 +50,9 @@ error bars.
 
 ## Why removing `Age` is not enough
 
-`Age` is not a model input. Dropping it was free — measured at **+0.11pp
-accuracy**, so it costs nothing to remove an ECOA-protected attribute from the
-feature set.
+`Age` is not a model input. Dropping it was free — adding it back changes
+accuracy by **+0.02pp**, inside run-to-run noise — so removing an
+ECOA-protected attribute from the feature set costs nothing here.
 
 But that does **not** make the model age-neutral, because the labels
 themselves are age-correlated:

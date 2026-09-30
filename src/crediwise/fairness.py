@@ -80,24 +80,50 @@ def group_report(
     return pd.DataFrame(rows)[cols].sort_values("group").reset_index(drop=True)
 
 
-def disparity_summary(report: pd.DataFrame) -> dict:
-    """Collapse a per-group report into the headline disparity measures."""
+def disparity_summary(
+    report: pd.DataFrame, exclude: tuple[str, ...] = ("Unknown",)
+) -> dict:
+    """Collapse a per-group report into the headline disparity measures.
+
+    ``exclude`` drops pseudo-groups from the ratio. "Unknown" collects rows
+    whose subgroup could not be determined -- for ``age_band`` that is the
+    8,482 records with a corrupt age. It is a data-quality bucket, not a
+    protected class, and letting it set the minimum would report a disparity
+    against people who do not form a group.
+
+    The summary also reports the same ratio computed on *base rates*, because
+    the two together answer the question that matters: is the model creating
+    disparity, or reproducing disparity already in the labels?
+    """
     if report.empty:
         return {"status": "no groups above minimum size"}
-    rates = report["selection_rate"]
+
+    scored = report[~report["group"].isin(exclude)]
+    if scored.empty:
+        return {"status": "no groups left after exclusions"}
+
+    rates = scored["selection_rate"]
+    base = scored["base_rate"]
     ratio = float(rates.min() / rates.max()) if rates.max() > 0 else float("nan")
+    base_ratio = float(base.min() / base.max()) if base.max() > 0 else float("nan")
+
     return {
         "disparate_impact_ratio": ratio,
         "passes_four_fifths_rule": bool(ratio >= FOUR_FIFTHS),
+        "base_rate_ratio": base_ratio,
+        # < 1 means the model widens the disparity already present in the
+        # labels; > 1 means it narrows it.
+        "amplification": float(ratio / base_ratio) if base_ratio > 0 else float("nan"),
         "selection_rate_range": [float(rates.min()), float(rates.max())],
-        "equal_opportunity_gap": float(report["tpr"].max() - report["tpr"].min()),
+        "equal_opportunity_gap": float(scored["tpr"].max() - scored["tpr"].min()),
         "equalised_odds_gap": float(
-            max(report["tpr"].max() - report["tpr"].min(),
-                report["fpr"].max() - report["fpr"].min())
+            max(scored["tpr"].max() - scored["tpr"].min(),
+                scored["fpr"].max() - scored["fpr"].min())
         ),
-        "calibration_gap": float(report["ece"].max() - report["ece"].min()),
-        "worst_group": str(report.loc[rates.idxmin(), "group"]),
-        "best_group": str(report.loc[rates.idxmax(), "group"]),
+        "calibration_gap": float(scored["ece"].max() - scored["ece"].min()),
+        "worst_group": str(scored.loc[rates.idxmin(), "group"]),
+        "best_group": str(scored.loc[rates.idxmax(), "group"]),
+        "excluded_from_ratio": [g for g in exclude if g in set(report["group"])],
     }
 
 
