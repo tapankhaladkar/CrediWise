@@ -1,7 +1,7 @@
 # Every tool runs as `python -m ...` so it uses the same interpreter as the
 # project's packages. A standalone `pytest` (e.g. installed with pipx or uv)
 # has its own Python and cannot import them.
-.PHONY: install data train test serve notebook docker clean
+.PHONY: install data train charts test serve notebook docker clean
 
 install:
 	python -m pip install -r requirements-dev.txt && python -m pip install -e .
@@ -14,6 +14,11 @@ data:
 train:
 	PYTHONPATH=src python -u -m crediwise.train
 	python scripts/make_model_card.py
+	python scripts/make_charts.py
+
+# Redraw the README charts (light and dark) from the trained model.
+charts:
+	python scripts/make_charts.py
 
 test:
 	PYTHONPATH=src python -m pytest -q

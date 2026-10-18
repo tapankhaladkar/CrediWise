@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 import joblib
 import numpy as np
 from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import cross_val_score, train_test_split
+from sklearn.model_selection import cross_val_score
 
 from . import __version__
 from . import config as cfg
@@ -51,8 +51,7 @@ def run() -> dict:
     log(f"  {len(raw):,} rows, {len(raw) - len(df)} duplicates dropped, "
         f"{len(df):,} customers, default rate {df[cfg.TARGET].mean():.1%}")
 
-    train, test = train_test_split(df, test_size=cfg.TEST_SIZE, stratify=df[cfg.TARGET],
-                                   random_state=cfg.RANDOM_STATE)
+    train, test = data_mod.split(df)
     X_train, y_train = train[cfg.FEATURES], train[cfg.TARGET]
     X_test, y_test = test[cfg.FEATURES], test[cfg.TARGET]
     log(f"  train {len(train):,} / test {len(test):,} (test set held back)")

@@ -70,6 +70,18 @@ def add_audit_dimensions(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def split(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The one train/test split, stratified by outcome.
+
+    Training, the walkthrough and the charts all call this, so they all see
+    exactly the same test customers.
+    """
+    from sklearn.model_selection import train_test_split
+
+    return train_test_split(df, test_size=cfg.TEST_SIZE, stratify=df[cfg.TARGET],
+                            random_state=cfg.RANDOM_STATE)
+
+
 def load_dataset(path: Path | str | None = None) -> pd.DataFrame:
     """Everything the pipeline needs, in one frame."""
     return add_audit_dimensions(add_features(clean(load_raw(path))))

@@ -24,7 +24,7 @@ For each customer the model sees only how they have used their card: the credit
 limit, and six months of bills, payments and repayment status. It never sees
 sex, marital status, age or education.
 
-## Results
+## At a glance
 
 All on a test set of 5,993 customers that played no part in building the model.
 
@@ -34,14 +34,85 @@ All on a test set of 5,993 customers that played no part in building the model.
 | Of the 10% it ranks riskiest | **69% defaulted**, against 22% overall |
 | Approved customers who then default | **10.4%**, against 22.1% if everyone were approved |
 | Customers who repaid but were declined | 4.8% |
-| Predicted vs actual default rate | within **1.3 points** on average, so the probabilities can be used as they are |
+| Predicted vs actual default rate | within **1.3 points** on average |
 | Fairness | passes the four-fifths rule for sex, marital status, age and education |
 
 Accuracy isn't quoted: 22% of customers default, so predicting "nobody
-defaults" is already 78% accurate and useless.
+defaults" is already 78% accurate and useless. Every figure comes from
+[`docs/MODEL_CARD.md`](docs/MODEL_CARD.md), and every chart below from
+`make train`, so neither can drift from the model.
 
-Every figure comes from [`docs/MODEL_CARD.md`](docs/MODEL_CARD.md), which is
-generated from the training run so it can't drift from the model.
+## Key findings
+
+### 1. Late payments are the strongest warning sign
+
+Customers who paid on time in all six months defaulted 12% of the time.
+Those who were late in all six: 70%.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/default-rate-by-lateness-dark.png">
+  <img src="docs/images/default-rate-by-lateness-light.png" alt="Bar chart: default rate rises with months paid late, from 12% at zero months to 70% at six months, against 22% for all customers.">
+</picture>
+
+### 2. The model ranks risk well, and beats a simple benchmark
+
+Gradient boosting (AUC 0.777) beats logistic regression (0.747) at every
+trade-off between catching defaulters and wrongly flagging good customers. Of
+the 10% of customers it ranks riskiest, 69% defaulted.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/roc-dark.png">
+  <img src="docs/images/roc-light.png" alt="ROC curves: gradient boosting, AUC 0.777, sits above logistic regression, AUC 0.747, and both sit well above chance." width="600">
+</picture>
+
+### 3. Its probabilities can be taken at face value
+
+Grouped by predicted risk, the share who actually defaulted tracks the
+prediction to within 1.3 points on average, so no extra calibration step is
+needed. The highest bins hold few customers, so they wobble more.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/calibration-dark.png">
+  <img src="docs/images/calibration-light.png" alt="Calibration chart: predicted default rate against actual default rate by bin, closely following the diagonal of perfect agreement." width="600">
+</picture>
+
+### 4. Its decisions halve defaults among approved customers
+
+The policy approves 57% of customers, refers 32% to a person and declines 12%.
+Approved customers default at 10% (against 22% if everyone were approved), and
+68% of those declined did default. Only 4.8% of customers who repaid were
+declined.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/decisions-dark.png">
+  <img src="docs/images/decisions-light.png" alt="Stacked bars by decision: approved, 3,393 customers, 10% defaulted; referred, 1,901, 26% defaulted; declined, 699, 68% defaulted.">
+</picture>
+
+### 5. Recent payment behaviour drives every prediction
+
+The three biggest influences are all about lateness: the worst delay in six
+months, the latest month's status, and how many months were late. The reasons
+given for each decline come from the same calculation (SHAP), applied to that
+one customer.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/importance-dark.png">
+  <img src="docs/images/importance-light.png" alt="Bar chart of average influence on predictions; the top three are the most serious payment delay, September repayment status and the number of months paid late.">
+</picture>
+
+### 6. Fair across groups, with one to watch
+
+The model never sees sex, marital status, age or education, so the audit checks
+its outcomes instead. All four pass the four-fifths rule. The group to watch is
+**customers aged 21–29**: the model predicts 23.6% will default when 21.7%
+actually did, and creditworthy customers in that group are approved 61% of the
+time against 68% for ages 30–39. A likely cause and the next step are in
+[`docs/FAIRNESS.md`](docs/FAIRNESS.md).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/fairness-dark.png">
+  <img src="docs/images/fairness-light.png" alt="Four panels showing the approval rate among customers who repaid: sex 66% female, 63% male; marital status 66% married, 64% single; age 61% at 21-29, 68% at 30-39, 66% at 40-49, 65% at 50-59; education 68% graduate school, 64% university, 63% high school.">
+</picture>
 
 ## How it works
 
@@ -66,8 +137,8 @@ generated from the training run so it can't drift from the model.
 
 ```bash
 make install    # dependencies
-make train      # ~35 s: trains, scores the test set, writes docs/MODEL_CARD.md
-make test       # 39 tests
+make train      # ~45 s: trains, scores the test set, writes the model card and charts
+make test       # 42 tests
 make serve      # web service on :8000, interactive docs at /docs
 make notebook   # re-run the walkthrough
 ```
@@ -110,9 +181,10 @@ rejected, so no client can believe the model uses them.
 | Path | Contents |
 |---|---|
 | `notebooks/walkthrough.ipynb` | The whole project as one readable story |
-| `src/crediwise/` | The code: data, model, decisions, explanations, fairness, web service |
-| `tests/` | 39 tests |
+| `src/crediwise/` | The code: data, model, decisions, explanations, fairness, charts, web service |
+| `tests/` | 42 tests |
 | `docs/MODEL_CARD.md` | Every result, generated from the training run |
+| `docs/images/` | The charts above, light and dark, generated from the training run |
 | `docs/DATA.md` | Where the data comes from and how it was cleaned |
 | `docs/FAIRNESS.md` | How fairness was checked, and what couldn't be |
 | `docs/LESSONS_FROM_V1.md` | What the first version of this project got wrong |
