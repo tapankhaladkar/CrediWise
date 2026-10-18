@@ -16,25 +16,45 @@ from crediwise.policy import DecisionPolicy
 from crediwise.api.schemas import Applicant
 
 
-@pytest.fixture()
-def client(raw_sample, monkeypatch):
+def _serve(raw_sample, monkeypatch, include_bureau: bool):
     cleaned = data_mod.clean(raw_sample)
-    X, y = data_mod.feature_frame(cleaned), cleaned[cfg.TARGET_COL]
-    pipeline = build_model(n_estimators=20).fit(X, y)
+    X = data_mod.feature_frame(cleaned, include_bureau=include_bureau)
+    y = cleaned[cfg.TARGET_COL]
+    pipeline = build_model(include_bureau=include_bureau, n_estimators=20).fit(X, y)
 
     bundle = {
         "pipeline": pipeline,
         "calibrated": pipeline,     # uncalibrated stand-in is fine for wiring
         "policy": DecisionPolicy(),
+        "include_bureau": include_bureau,
         "feature_columns": list(X.columns),
         "trained_at": "2026-01-01T00:00:00+00:00",
     }
+    # Set inside the client context too: app startup loads any real artifact
+    # from artifacts/, which would otherwise replace the injected model.
     monkeypatch.setitem(api_main.STATE, "bundle", bundle)
     monkeypatch.setitem(api_main.STATE, "explainer", Explainer(pipeline))
-    with TestClient(api_main.app) as c:
-        monkeypatch.setitem(api_main.STATE, "bundle", bundle)
-        monkeypatch.setitem(api_main.STATE, "explainer", Explainer(pipeline))
-        yield c
+    client = TestClient(api_main.app)
+    client.__enter__()
+    monkeypatch.setitem(api_main.STATE, "bundle", bundle)
+    monkeypatch.setitem(api_main.STATE, "explainer", Explainer(pipeline))
+    return client
+
+
+@pytest.fixture()
+def client(raw_sample, monkeypatch):
+    """Serves a model trained with the bureau feature, like the default build."""
+    c = _serve(raw_sample, monkeypatch, include_bureau=True)
+    yield c
+    c.__exit__(None, None, None)
+
+
+@pytest.fixture()
+def nobureau_client(raw_sample, monkeypatch):
+    """Serves a model trained with --no-bureau."""
+    c = _serve(raw_sample, monkeypatch, include_bureau=False)
+    yield c
+    c.__exit__(None, None, None)
 
 
 def _example() -> dict:
@@ -58,10 +78,49 @@ def test_score_returns_calibrated_probabilities(client):
 
 
 def test_partial_record_still_scores(client):
-    """Missing fields are imputed, so a sparse application is not rejected."""
-    response = client.post("/score", json={"Annual_Income": 25_000})
+    """Missing applicant fields are imputed, so a sparse application scores.
+
+    The bureau field is supplied: it is the one input that is never imputed.
+    """
+    response = client.post("/score", json={"Annual_Income": 25_000, "Credit_Mix": 1})
     assert response.status_code == 200
     assert response.json()["risk_band"] in {"Poor", "Standard", "Good"}
+
+
+def test_missing_bureau_input_is_rejected_not_imputed(client):
+    """docs/FEATURE_CONTRACT.md: never serve the full model with Credit_Mix
+    imputed to the median. Without it, Good-class recall drops 0.652 -> 0.491.
+    """
+    payload = {k: v for k, v in _example().items() if k != "Credit_Mix"}
+    response = client.post("/score", json=payload)
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["error"] == "missing_bureau_input"
+    assert detail["missing"] == ["Credit_Mix"]
+    assert "--no-bureau" in detail["message"]
+
+
+def test_explicit_null_bureau_input_is_rejected(client):
+    """Sending null is the same as omitting the field."""
+    response = client.post("/score", json=_example() | {"Credit_Mix": None})
+    assert response.status_code == 422
+    assert response.json()["detail"]["missing"] == ["Credit_Mix"]
+
+
+def test_nobureau_model_does_not_require_credit_mix(nobureau_client):
+    """The rule follows the served model's features, not a hard-coded field,
+    so a --no-bureau deployment scores requests that lack it.
+    """
+    payload = {k: v for k, v in _example().items() if k != "Credit_Mix"}
+    response = nobureau_client.post("/score", json=payload)
+    assert response.status_code == 200
+    assert response.json()["risk_band"] in {"Poor", "Standard", "Good"}
+
+
+def test_nobureau_model_ignores_a_supplied_credit_mix(nobureau_client):
+    """A caller that sends the field anyway is not penalised for it."""
+    response = nobureau_client.post("/score", json=_example())
+    assert response.status_code == 200
 
 
 def test_out_of_range_input_is_rejected(client):

@@ -14,8 +14,13 @@ from pydantic import BaseModel, Field
 
 
 class Applicant(BaseModel):
-    """One applicant-month. All fields optional -- missing values are imputed
-    with the medians learned at training time, so partial records still score.
+    """One applicant-month.
+
+    Applicant- and lender-supplied fields are optional: missing values are
+    imputed with the medians learned at training time, so partial records
+    still score. Bureau fields are the exception. If the served model was
+    trained on one, a request that omits it is rejected rather than imputed
+    -- see docs/FEATURE_CONTRACT.md.
     """
 
     Annual_Income: float | None = Field(None, ge=0, le=1_000_000)
@@ -37,7 +42,9 @@ class Applicant(BaseModel):
         None, ge=0, le=600, description="Length of credit history in months"
     )
     Credit_Mix: Literal[0, 1, 2] | None = Field(
-        None, description="Bureau-supplied: 0=Bad, 1=Standard, 2=Good"
+        None,
+        description="Bureau-supplied: 0=Bad, 1=Standard, 2=Good. Required "
+                    "when the served model uses it; never imputed.",
     )
     Payment_of_Min_Amount: Literal[0, 1] | None = None
     Occupation: str | None = None

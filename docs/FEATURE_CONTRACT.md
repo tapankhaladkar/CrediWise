@@ -17,7 +17,8 @@ deliberately excluded. `src/crediwise/api/schemas.py` enforces this.
 Plus two nominal fields: `Occupation`, `Payment_Behaviour`.
 
 All are optional. Missing values are imputed with the medians learned at
-training time, so a partial record still scores.
+training time, so a partial record still scores. The bureau field below is
+the one exception.
 
 ### Bureau-supplied (1)
 
@@ -58,10 +59,33 @@ degrades is where the decision boundary falls. Much of the loss is therefore
 likely recoverable by re-tuning the approve threshold for the no-bureau
 variant rather than accepting it as given. That has not been done.
 
-If a deployment cannot obtain a bureau credit-mix rating before scoring, train
-and serve the `--no-bureau` variant and accept that cost. Do not serve
-the full model with `Credit_Mix` imputed to the median — that silently
-substitutes the population average for the single most consequential input.
+**`Credit_Mix` is never imputed, and the API enforces it.** Filling it with
+the median would silently substitute the population average for the input
+whose absence costs a quarter of Good-class recall. When the served model was
+trained on it, a request that omits it or sends `null` is rejected:
+
+```
+HTTP 422
+{
+  "detail": {
+    "error": "missing_bureau_input",
+    "missing": ["Credit_Mix"],
+    "message": "The served model requires Credit_Mix, a bureau-supplied input,
+                and will not impute it. Supply it, or score against a model
+                trained with --no-bureau."
+  }
+}
+```
+
+The requirement is read from the served model's own feature list, not
+hard-coded. A model trained with `--no-bureau` does not require the field and
+ignores it if sent.
+
+If a deployment cannot obtain a bureau credit-mix rating before scoring, serve
+the `--no-bureau` variant and accept the cost above. **Current limitation:**
+the API loads one fixed artifact, `artifacts/crediwise_model.joblib`, so
+serving the variant today means placing the no-bureau model at that path.
+Configurable model selection is an open item.
 
 ## Deliberate exclusions
 
@@ -88,6 +112,9 @@ substitutes the population average for the single most consequential input.
   "disclaimer": "..."
 }
 ```
+
+A request missing a required bureau input returns 422 instead (see above);
+out-of-range values also return 422, from schema validation.
 
 `reason_codes` is populated whenever `is_adverse` is true, giving the
 principal factors that drove the outcome (12 CFR 1002.9). They describe what

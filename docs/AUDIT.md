@@ -295,6 +295,11 @@ minority classes.
 **Closed by** declaring it a bureau input in `docs/FEATURE_CONTRACT.md` and
 shipping a `--no-bureau` variant so the dependency is quantified, not hidden.
 
+**Enforced at serving time.** The API originally made `Credit_Mix` optional
+and imputed it with the median when absent, the exact behaviour the feature
+contract prohibits. It now rejects such requests with 422 whenever the served
+model was trained on the field (`tests/test_api.py`).
+
 ### 16. Two informative features discarded rather than parsed — *partly revised*
 
 Both were dropped for being awkward strings. Measured under a grouped split

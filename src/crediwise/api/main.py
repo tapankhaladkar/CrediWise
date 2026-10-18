@@ -68,13 +68,48 @@ def health() -> HealthResponse:
     )
 
 
+def required_bureau_inputs(bundle: dict) -> list[str]:
+    """Bureau features the loaded model was trained on.
+
+    Derived from the model's own feature list rather than hard-coded, so a
+    deployment serving the `--no-bureau` variant does not demand them.
+    """
+    return [c for c in cfg.BUREAU_FEATURES if c in bundle["feature_columns"]]
+
+
 @app.post("/score", response_model=ScoreResponse)
 def score(applicant: Applicant) -> ScoreResponse:
+    """Score one applicant-month.
+
+    Most fields may be omitted and are imputed with training medians. Bureau
+    inputs the loaded model depends on may not: a request without them is
+    rejected with 422 rather than scored on the population median.
+    """
     bundle = STATE.get("bundle")
     if bundle is None:
         raise HTTPException(
             status_code=503,
             detail="No trained model available. Run `make train` first.",
+        )
+
+    # docs/FEATURE_CONTRACT.md: never serve the full model with Credit_Mix
+    # imputed. It is the model's bureau credit-quality input, and filling it
+    # with the median substitutes the population average for the field whose
+    # absence costs a quarter of Good-class recall (0.652 -> 0.491).
+    missing = [c for c in required_bureau_inputs(bundle)
+               if getattr(applicant, c) is None]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "missing_bureau_input",
+                "missing": missing,
+                "message": (
+                    f"The served model requires {', '.join(missing)}, a "
+                    "bureau-supplied input, and will not impute it. Supply "
+                    "it, or score against a model trained with --no-bureau."
+                ),
+            },
         )
 
     frame = pd.DataFrame([applicant.model_dump()])
