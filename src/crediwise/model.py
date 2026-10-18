@@ -1,78 +1,63 @@
-"""Model construction and probability calibration.
+"""The model.
 
-A lending decision needs a probability it can act on, not just an argmax label.
-Random Forest votes are not calibrated probabilities, so the deployed estimator
-wraps the forest in isotonic regression fit on a customer-disjoint slice of the
-training data.
+Gradient boosting on 24 numeric credit-behaviour features. There is no
+preprocessing pipeline because none is needed: the data has no missing values
+and no categorical inputs, and tree models do not need scaling.
+
+No probability calibration layer either. Measured on out-of-fold training
+predictions, the raw model is already well calibrated (expected calibration
+error 0.0063); sigmoid calibration changed nothing and isotonic made Brier
+score and AUC slightly worse. A step that does not help is a step that can
+break, so it was left out.
 """
 
 from __future__ import annotations
 
-import numpy as np
-import pandas as pd
-from sklearn.calibration import CalibratedClassifierCV
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.frozen import FrozenEstimator
-from sklearn.pipeline import Pipeline
+from scipy.stats import loguniform, randint, uniform
+from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
+from sklearn.pipeline import Pipeline, make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 from . import config as cfg
-from .features import build_preprocessor
-from .splits import holdout_split
 
 
-def build_model(include_bureau: bool = True, **rf_kwargs) -> Pipeline:
-    """Preprocessing plus a seeded Random Forest, as one fitted object.
+def cv_splitter() -> StratifiedKFold:
+    return StratifiedKFold(cfg.N_SPLITS, shuffle=True, random_state=cfg.RANDOM_STATE)
 
-    Persisting the whole pipeline is what makes the artifact servable: the
-    original notebook saved nothing, and its LabelEncoder mappings were
-    unrecoverable once the kernel died (audit #25).
-    """
-    # min_samples_leaf=20 rather than the sklearn default of 1: it scores
-    # marginally better here (67.65 vs 67.41 macro-F1) and keeps the trees
-    # shallow enough for SHAP to stay tractable. Fully grown trees average
-    # 11,332 leaves, which pushes a 2,000-row explanation from 11 minutes
-    # to 94.
-    params = dict(
-        n_estimators=300,
-        min_samples_leaf=20,
-        n_jobs=-1,
+
+def base_model(**params) -> HistGradientBoostingClassifier:
+    """Gradient boosting with early stopping on an internal validation slice."""
+    return HistGradientBoostingClassifier(
+        max_iter=1000,
+        early_stopping=True,
+        validation_fraction=0.1,
+        n_iter_no_change=20,
         random_state=cfg.RANDOM_STATE,
-        class_weight=None,
+        **params,
     )
-    params.update(rf_kwargs)
-    return Pipeline([
-        ("preprocess", build_preprocessor(include_bureau=include_bureau)),
-        ("classifier", RandomForestClassifier(**params)),
-    ])
 
 
-def fit_calibrated(
-    model: Pipeline,
-    X: pd.DataFrame,
-    y: pd.Series,
-    groups: pd.Series,
-    calibration_size: float = 0.25,
-    method: str = "isotonic",
-) -> tuple[CalibratedClassifierCV, dict]:
-    """Fit ``model`` then calibrate it on a held-out, customer-disjoint slice.
+def build_search(n_iter: int = cfg.SEARCH_ITERATIONS) -> RandomizedSearchCV:
+    """Randomised hyperparameter search, scored by cross-validated AUC.
 
-    ``CalibratedClassifierCV`` cannot be handed groups directly, so the
-    fit/calibration split is made here and the base estimator is wrapped in
-    ``FrozenEstimator`` so calibration does not refit it. Reusing training
-    rows for calibration would produce optimistically flat reliability curves.
+    Run on the training split only; the test set is not seen until the
+    single final evaluation.
     """
-    frame = pd.DataFrame({cfg.GROUP_COL: groups.values, cfg.TARGET_COL: y.values})
-    fit_idx, cal_idx = holdout_split(frame, test_size=calibration_size)
-
-    base = model.fit(X.iloc[fit_idx], y.iloc[fit_idx])
-    calibrated = CalibratedClassifierCV(FrozenEstimator(base), method=method)
-    calibrated.fit(X.iloc[cal_idx], y.iloc[cal_idx])
-
-    meta = {
-        "calibration_method": method,
-        "fit_rows": int(len(fit_idx)),
-        "calibration_rows": int(len(cal_idx)),
-        "fit_customers": int(frame[cfg.GROUP_COL].iloc[fit_idx].nunique()),
-        "calibration_customers": int(frame[cfg.GROUP_COL].iloc[cal_idx].nunique()),
+    space = {
+        "learning_rate": loguniform(0.02, 0.3),
+        "max_leaf_nodes": randint(8, 64),
+        "min_samples_leaf": randint(20, 300),
+        "l2_regularization": loguniform(1e-3, 10),
+        "max_features": uniform(0.4, 0.6),
     }
-    return calibrated, meta
+    return RandomizedSearchCV(
+        base_model(), space, n_iter=n_iter, cv=cv_splitter(),
+        scoring="roc_auc", n_jobs=-1, random_state=cfg.RANDOM_STATE,
+    )
+
+
+def baseline_model() -> Pipeline:
+    """Logistic regression, the simple benchmark the boosted model must beat."""
+    return make_pipeline(StandardScaler(), LogisticRegression(max_iter=2000))

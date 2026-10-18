@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crediwise"
-version = "0.2.0"
-description = "Credit score classification and risk assessment with fairness, explainability and calibration"
+version = "1.0.0"
+description = "Predicting credit card default from six months of payment history, with reasons and a fairness audit"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

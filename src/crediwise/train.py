@@ -1,187 +1,143 @@
-"""Training entry point.
+"""Train, evaluate once on held-out data, and save the model.
 
-Produces every number the README quotes, plus the artifacts the API serves:
+    python -m crediwise.train
 
-    python -m crediwise.train                # full model
-    python -m crediwise.train --no-bureau    # variant without Credit_Mix
-    python -m crediwise.train --demo-leakage # also report the leaky split
-
-Outputs go to artifacts/ (the servable model) and reports/ (metrics, fairness).
+1. Split off 20% of customers as a test set and do not look at it again.
+2. On the other 80%: benchmark logistic regression, then search
+   gradient-boosting settings by 5-fold cross-validation.
+3. Score the chosen model on the test set -- once.
+4. Apply the decision policy, audit fairness, compute explanations.
+5. Save the model to artifacts/ and the results to reports/.
 """
 
 from __future__ import annotations
 
-import argparse
 import json
+import time
 from datetime import datetime, timezone
 
 import joblib
 import numpy as np
-import pandas as pd
+from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import cross_val_score, train_test_split
 
+from . import __version__
 from . import config as cfg
 from . import data as data_mod
-from . import evaluate as eval_mod
-from . import fairness as fairness_mod
+from . import evaluate, fairness
 from .explain import Explainer
-from .model import build_model, fit_calibrated
+from .model import baseline_model, build_search, cv_splitter
 from .policy import DecisionPolicy
-from .splits import assert_no_group_overlap, cv_splitter, holdout_split
 
 
-def _json_safe(obj):
-    if isinstance(obj, (np.integer,)):
-        return int(obj)
-    if isinstance(obj, (np.floating,)):
-        return float(obj)
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
+def log(msg: str) -> None:
+    print(msg, flush=True)
+
+
+def _json(obj):
+    if isinstance(obj, np.generic):
+        return obj.item()
     raise TypeError(f"not serialisable: {type(obj)}")
 
 
-def run(include_bureau: bool = True, demo_leakage: bool = False) -> dict:
+def run() -> dict:
+    started = time.time()
     cfg.ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     cfg.REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
-    print("Loading and cleaning...")
+    log("Loading data...")
     raw = data_mod.load_raw()
-    df = data_mod.add_audit_dimensions(data_mod.clean(raw))
-    X = data_mod.feature_frame(df, include_bureau=include_bureau)
-    y = df[cfg.TARGET_COL]
-    groups = df[cfg.GROUP_COL]
-    print(f"  {len(df):,} rows, {groups.nunique():,} customers, "
-          f"{X.shape[1]} raw features")
+    df = data_mod.add_audit_dimensions(data_mod.add_features(data_mod.clean(raw)))
+    log(f"  {len(raw):,} rows, {len(raw) - len(df)} duplicates dropped, "
+        f"{len(df):,} customers, default rate {df[cfg.TARGET].mean():.1%}")
 
-    train_idx, test_idx = holdout_split(df)
-    assert_no_group_overlap(groups, train_idx, test_idx)
-    print(f"  grouped holdout: {len(train_idx):,} train / {len(test_idx):,} test, "
-          f"0 shared customers")
+    train, test = train_test_split(df, test_size=cfg.TEST_SIZE, stratify=df[cfg.TARGET],
+                                   random_state=cfg.RANDOM_STATE)
+    X_train, y_train = train[cfg.FEATURES], train[cfg.TARGET]
+    X_test, y_test = test[cfg.FEATURES], test[cfg.TARGET]
+    log(f"  train {len(train):,} / test {len(test):,} (test set held back)")
 
-    print("Cross-validating (StratifiedGroupKFold, 5 folds)...")
-    cv_scores = cross_val_score(
-        build_model(include_bureau=include_bureau),
-        X.iloc[train_idx], y.iloc[train_idx],
-        groups=groups.iloc[train_idx],
-        cv=cv_splitter(), scoring="f1_macro", n_jobs=1,
-    )
-    print(f"  macro-F1 {cv_scores.mean()*100:.2f}% +/- {cv_scores.std()*100:.2f}")
+    log("Benchmark: logistic regression, 5-fold CV on training data...")
+    lr_cv = cross_val_score(baseline_model(), X_train, y_train, cv=cv_splitter(),
+                            scoring="roc_auc", n_jobs=-1)
+    log(f"  CV AUC {lr_cv.mean():.4f} +/- {lr_cv.std():.4f}")
 
-    print("Fitting and calibrating...")
-    uncalibrated = build_model(include_bureau=include_bureau).fit(
-        X.iloc[train_idx], y.iloc[train_idx]
-    )
-    calibrated, calib_meta = fit_calibrated(
-        build_model(include_bureau=include_bureau),
-        X.iloc[train_idx], y.iloc[train_idx], groups.iloc[train_idx],
-    )
+    log(f"Searching gradient-boosting settings ({cfg.SEARCH_ITERATIONS} candidates x "
+        f"{cfg.N_SPLITS} folds)...")
+    search = build_search().fit(X_train, y_train)
+    model = search.best_estimator_
+    best_idx = search.best_index_
+    cv_std = float(search.cv_results_["std_test_score"][best_idx])
+    log(f"  best CV AUC {search.best_score_:.4f} +/- {cv_std:.4f}")
 
-    y_test = y.iloc[test_idx].to_numpy()
-    proba_uncal = uncalibrated.predict_proba(X.iloc[test_idx])
-    proba_cal = calibrated.predict_proba(X.iloc[test_idx])
-
-    metrics = {
-        "uncalibrated": eval_mod.evaluate(y_test, proba_uncal, "uncalibrated"),
-        "calibrated": eval_mod.evaluate(y_test, proba_cal, "calibrated"),
-        "cross_validation": {
-            "metric": "f1_macro",
-            "folds": cfg.N_SPLITS,
-            "scores": cv_scores.tolist(),
-            "mean": float(cv_scores.mean()),
-            "std": float(cv_scores.std()),
-        },
-        "calibration_setup": calib_meta,
-    }
-
-    if demo_leakage:
-        print("Reproducing the leaky split for comparison...")
-        tr_l, te_l = train_test_split(
-            np.arange(len(df)), test_size=cfg.TEST_SIZE,
-            random_state=cfg.RANDOM_STATE,
-        )
-        leaky = build_model(include_bureau=include_bureau).fit(
-            X.iloc[tr_l], y.iloc[tr_l]
-        )
-        leaky_proba = leaky.predict_proba(X.iloc[te_l])
-        shared = len(set(groups.iloc[tr_l]) & set(groups.iloc[te_l]))
-        metrics["leaky_split_demo"] = eval_mod.evaluate(
-            y.iloc[te_l].to_numpy(), leaky_proba, "random row split (LEAKY)"
-        )
-        metrics["leaky_split_demo"]["shared_customers"] = shared
-        print(f"  leaky accuracy {metrics['leaky_split_demo']['accuracy']*100:.2f}% "
-              f"vs honest {metrics['calibrated']['accuracy']*100:.2f}% "
-              f"({shared:,} customers shared)")
-
-    print("Auditing fairness...")
-    audit_frame = df.iloc[test_idx][cfg.AUDIT_DIMENSIONS].reset_index(drop=True)
-    fairness_report = fairness_mod.audit(y_test, proba_cal, audit_frame)
-
-    print("Computing SHAP importances...")
-    sample = X.iloc[test_idx].sample(
-        min(1000, len(test_idx)), random_state=cfg.RANDOM_STATE
-    )
-    explainer = Explainer(uncalibrated)
-    importance = explainer.global_importance(sample)
+    log("Scoring the held-out test set (first and only time)...")
+    p_test = model.predict_proba(X_test)[:, 1]
+    lr_test_auc = float(roc_auc_score(
+        y_test, baseline_model().fit(X_train, y_train).predict_proba(X_test)[:, 1]))
+    scores = evaluate.score_metrics(y_test, p_test)
+    log(f"  AUC {scores['auc']:.4f} | calibration error {scores['calibration_error']:.4f}")
 
     policy = DecisionPolicy()
-    decisions = policy.decide(proba_cal[:5])
+    decisions = policy.decide(p_test)
+    outcomes = evaluate.decision_metrics(y_test, decisions)
 
-    variant = cfg.variant_for(include_bureau)
-    bundle = {
-        "pipeline": uncalibrated,
-        "calibrated": calibrated,
-        "policy": policy,
-        "variant": variant,
-        "include_bureau": include_bureau,
-        "trained_at": datetime.now(timezone.utc).isoformat(),
-        "feature_columns": list(X.columns),
-        "cv_macro_f1": float(cv_scores.mean()),
-        "test_macro_f1": metrics["calibrated"]["macro_f1"],
-    }
-    suffix = "" if include_bureau else "_nobureau"
-    model_path = cfg.ARTIFACT_DIR / cfg.MODEL_VARIANTS[variant]["artifact"]
-    joblib.dump(bundle, model_path, compress=3)
-    print(f"  saved {model_path.name} "
-          f"({model_path.stat().st_size / 1e6:.1f} MB)")
+    log("Auditing fairness...")
+    audit = fairness.audit(y_test, p_test, decisions, test.reset_index(drop=True),
+                           cfg.AUDIT_DIMENSIONS)
+
+    log("Explaining...")
+    importance = Explainer(model).global_importance(X_test)
+
+    trained_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    params = {k: (round(float(v), 4) if isinstance(v, (float, np.floating)) else int(v))
+              for k, v in search.best_params_.items()}
+    joblib.dump({"model": model, "policy": policy, "features": cfg.FEATURES,
+                 "trained_at": trained_at, "params": params, "version": __version__},
+                cfg.ARTIFACT_PATH, compress=3)
+    log(f"  saved {cfg.ARTIFACT_PATH.name} ({cfg.ARTIFACT_PATH.stat().st_size / 1e6:.1f} MB)")
 
     report = {
-        "trained_at": bundle["trained_at"],
-        "include_bureau": include_bureau,
-        "n_rows": int(len(df)),
-        "n_customers": int(groups.nunique()),
-        "metrics": metrics,
-        "fairness": fairness_report,
-        "global_importance": importance.head(15).to_dict(orient="records"),
+        "trained_at": trained_at,
+        "data": {"rows": int(len(raw)), "duplicates_dropped": int(len(raw) - len(df)),
+                 "customers": int(len(df)), "train": int(len(train)), "test": int(len(test)),
+                 "default_rate": float(df[cfg.TARGET].mean())},
+        "selection": {
+            "logistic_regression_cv_auc": float(lr_cv.mean()),
+            "logistic_regression_cv_std": float(lr_cv.std()),
+            "gradient_boosting_cv_auc": float(search.best_score_),
+            "gradient_boosting_cv_std": cv_std,
+            "search_candidates": cfg.SEARCH_ITERATIONS,
+            "best_params": params,
+            "trees_after_early_stopping": int(model.n_iter_),
+        },
+        "test": scores | {"logistic_regression_auc": lr_test_auc},
+        "calibration": evaluate.calibration_table(y_test, p_test).to_dict(orient="records"),
         "policy": policy.to_dict(),
-        "example_decisions": decisions,
+        "decisions": outcomes,
+        "fairness": audit,
+        "importance": importance.to_dict(orient="records"),
+        "features": cfg.FEATURES,
+        "train_seconds": round(time.time() - started, 1),
     }
-    report_path = cfg.REPORT_DIR / f"metrics{suffix}.json"
-    report_path.write_text(json.dumps(report, indent=2, default=_json_safe))
-    eval_mod.reliability_table(y_test, proba_cal).to_csv(
-        cfg.REPORT_DIR / f"reliability{suffix}.csv", index=False
-    )
-    print(f"  saved {report_path.name}")
+    (cfg.REPORT_DIR / "metrics.json").write_text(json.dumps(report, indent=2, default=_json))
+    log(f"  saved metrics.json  [{report['train_seconds']}s total]")
     return report
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train the CrediWise model.")
-    parser.add_argument("--no-bureau", action="store_true",
-                        help="train without the bureau-supplied Credit_Mix feature")
-    parser.add_argument("--demo-leakage", action="store_true",
-                        help="also report the original leaky random split")
-    args = parser.parse_args()
-    report = run(include_bureau=not args.no_bureau, demo_leakage=args.demo_leakage)
-
-    m = report["metrics"]["calibrated"]
-    print("\n" + "=" * 62)
-    print(f"  accuracy        {m['accuracy']*100:6.2f}%   "
-          f"(baseline {m['baseline_accuracy']*100:.2f}%)")
-    print(f"  macro-F1        {m['macro_f1']*100:6.2f}%")
-    print(f"  macro AUC (OvR) {m['macro_auc_ovr']:6.3f}")
-    print(f"  ECE             {m['expected_calibration_error']:6.4f}")
-    print("=" * 62)
-    print(m["report"])
+    r = run()
+    t, d = r["test"], r["decisions"]
+    print("\n" + "=" * 60)
+    print(f"  AUC              {t['auc']:.4f}   (logistic regression {t['logistic_regression_auc']:.4f})")
+    print(f"  KS               {t['ks']:.4f}")
+    print(f"  PR-AUC           {t['pr_auc']:.4f}   (random: {t['default_rate']:.4f})")
+    print(f"  Brier            {t['brier']:.4f}   (no-skill: {t['brier_baseline']:.4f})")
+    print(f"  calibration err  {t['calibration_error']:.4f}")
+    print(f"  approve {d['approved_share']:.1%} | refer {d['referred_share']:.1%} | "
+          f"decline {d['declined_share']:.1%}")
+    print(f"  default rate among approved {d['default_rate_among_approved']:.1%} "
+          f"(vs {d['default_rate_if_all_approved']:.1%} if everyone were approved)")
+    print("=" * 60)
 
 
 if __name__ == "__main__":

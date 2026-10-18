@@ -1,9 +1,10 @@
-"""Request and response contracts for the scoring API.
+"""Request and response shapes for the scoring service.
 
-The field list here *is* the feature contract: anything the model needs at
-scoring time must be suppliable by a caller. Fields the source dataset carries
-but the model does not use (Age, Month, Type_of_Loan, the direct identifiers)
-are deliberately absent.
+The request is what a card issuer already holds for an existing customer:
+the credit limit it granted and the last six months of statements, payments
+and repayment status. Nothing about the customer as a person -- no sex,
+marital status, age or education -- is asked for, because the model does not
+use it.
 """
 
 from __future__ import annotations
@@ -12,103 +13,74 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+STATUS_HELP = ("Repayment status: -2 no balance, -1 paid in full, 0 revolving "
+               "credit (paid at least the minimum), 1-9 months late. -2 and 0 "
+               "are undocumented in the source and interpreted from the data.")
+
+Status = Field(ge=-2, le=9, description=STATUS_HELP)
+Bill = Field(ge=-1_000_000, le=10_000_000,
+             description="Statement balance; negative means the customer is in credit")
+Paid = Field(ge=0, le=10_000_000, description="Amount paid during the month")
+
 
 class Applicant(BaseModel):
-    """One applicant-month.
+    credit_limit: float = Field(gt=0, le=10_000_000, description="Credit limit granted")
 
-    Applicant- and lender-supplied fields are optional: missing values are
-    imputed with the medians learned at training time, so partial records
-    still score. Bureau fields are the exception. If the served model was
-    trained on one, a request that omits it is rejected rather than imputed
-    -- see docs/FEATURE_CONTRACT.md.
-    """
+    status_sep: int = Status
+    status_aug: int = Status
+    status_jul: int = Status
+    status_jun: int = Status
+    status_may: int = Status
+    status_apr: int = Status
 
-    Annual_Income: float | None = Field(None, ge=0, le=1_000_000)
-    Monthly_Inhand_Salary: float | None = Field(None, ge=0, le=100_000)
-    Num_Bank_Accounts: float | None = Field(None, ge=0, le=20)
-    Num_Credit_Card: float | None = Field(None, ge=0, le=20)
-    Interest_Rate: float | None = Field(None, ge=0, le=50)
-    Num_of_Loan: float | None = Field(None, ge=0, le=20)
-    Delay_from_due_date: float | None = Field(None, ge=0, le=200)
-    Num_of_Delayed_Payment: float | None = Field(None, ge=0, le=100)
-    Changed_Credit_Limit: float | None = None
-    Num_Credit_Inquiries: float | None = Field(None, ge=0, le=50)
-    Outstanding_Debt: float | None = Field(None, ge=0, le=500_000)
-    Credit_Utilization_Ratio: float | None = Field(None, ge=0, le=100)
-    Total_EMI_per_month: float | None = Field(None, ge=0, le=100_000)
-    Amount_invested_monthly: float | None = Field(None, ge=0, le=100_000)
-    Monthly_Balance: float | None = None
-    Credit_History_Months: float | None = Field(
-        None, ge=0, le=600, description="Length of credit history in months"
-    )
-    Credit_Mix: Literal[0, 1, 2] | None = Field(
-        None,
-        description="Bureau-supplied: 0=Bad, 1=Standard, 2=Good. Required "
-                    "when the served model uses it; never imputed.",
-    )
-    Payment_of_Min_Amount: Literal[0, 1] | None = None
-    Occupation: str | None = None
-    Payment_Behaviour: str | None = None
+    bill_sep: float = Bill
+    bill_aug: float = Bill
+    bill_jul: float = Bill
+    bill_jun: float = Bill
+    bill_may: float = Bill
+    bill_apr: float = Bill
 
-    model_config = {
-        "json_schema_extra": {
-            "examples": [{
-                "Annual_Income": 19114.12,
-                "Monthly_Inhand_Salary": 1824.84,
-                "Num_Bank_Accounts": 3,
-                "Num_Credit_Card": 4,
-                "Interest_Rate": 3,
-                "Num_of_Loan": 4,
-                "Delay_from_due_date": 3,
-                "Num_of_Delayed_Payment": 7,
-                "Changed_Credit_Limit": 11.27,
-                "Num_Credit_Inquiries": 4,
-                "Outstanding_Debt": 809.98,
-                "Credit_Utilization_Ratio": 26.82,
-                "Total_EMI_per_month": 49.57,
-                "Amount_invested_monthly": 80.42,
-                "Monthly_Balance": 312.49,
-                "Credit_History_Months": 265,
-                "Credit_Mix": 2,
-                "Payment_of_Min_Amount": 0,
-                "Occupation": "Scientist",
-                "Payment_Behaviour": "High_spent_Small_value_payments",
-            }]
-        }
-    }
+    paid_sep: float = Paid
+    paid_aug: float = Paid
+    paid_jul: float = Paid
+    paid_jun: float = Paid
+    paid_may: float = Paid
+    paid_apr: float = Paid
+
+    # Unknown fields are rejected, not ignored: a client sending sex or age
+    # should learn immediately that the model does not use them.
+    model_config = {"extra": "forbid", "json_schema_extra": {"examples": [{
+        "credit_limit": 120000,
+        "status_sep": -1, "status_aug": 2, "status_jul": 0,
+        "status_jun": 0, "status_may": 0, "status_apr": 2,
+        "bill_sep": 2682, "bill_aug": 1725, "bill_jul": 2682,
+        "bill_jun": 3272, "bill_may": 3455, "bill_apr": 3261,
+        "paid_sep": 0, "paid_aug": 1000, "paid_jul": 1000,
+        "paid_jun": 1000, "paid_may": 0, "paid_apr": 2000,
+    }]}}
 
 
-class ReasonCode(BaseModel):
+class Reason(BaseModel):
     feature: str
     reason: str
-    contribution: float
+    contribution: float = Field(description="Push toward default, in log-odds")
 
 
 class ScoreResponse(BaseModel):
-    risk_band: str = Field(description="Poor, Standard or Good")
-    probabilities: dict[str, float]
-    decision: str = Field(description="approve, refer or decline")
-    is_adverse: bool
-    cost_optimal_band: str
-    reason_codes: list[ReasonCode] = Field(
+    probability_of_default: float = Field(
+        description="Chance the customer misses next month's payment")
+    decision: Literal["approve", "refer", "decline"]
+    reasons: list[Reason] = Field(
         default_factory=list,
-        description="Principal factors driving an adverse outcome "
-                    "(ECOA 12 CFR 1002.9). Populated when is_adverse is true.",
-    )
-    model_variant: str = Field(description="Which trained model scored this "
-                               "request: full or nobureau")
-    model_version: str = Field(description="Content hash of the model file, "
-                               "identifying the exact model that decided")
+        description="What raised this customer's risk most. Given for refer "
+                    "and decline; a decline must state its reasons "
+                    "(Regulation B, 12 CFR 1002.9).")
+    model_version: str = Field(description="Hash of the model file that decided")
     disclaimer: str
 
 
 class HealthResponse(BaseModel):
-    status: str
+    status: Literal["ok", "degraded"]
     model_loaded: bool
-    model_variant: str | None = Field(
-        None, description="Variant this deployment is configured to serve, "
-                          "reported even when its artifact is missing")
     model_version: str | None = None
     trained_at: str | None = None
-    required_bureau_inputs: list[str] | None = Field(
-        None, description="Fields /score will reject a request for omitting")

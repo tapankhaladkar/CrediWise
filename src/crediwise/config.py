@@ -1,7 +1,7 @@
-"""Schema, domain ranges and the feature contract.
+"""Paths, column names and the feature list.
 
-Everything the rest of the package needs to know about the shape of the data
-lives here, so the training pipeline and the serving API cannot drift apart.
+Everything the training pipeline and the web service need to agree on lives
+here, so the two cannot drift apart.
 """
 
 from __future__ import annotations
@@ -9,124 +9,73 @@ from __future__ import annotations
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DATA_PATH = PROJECT_ROOT / "data" / "credit_score.csv"
+DATA_PATH = PROJECT_ROOT / "data" / "credit_default.csv"
 ARTIFACT_DIR = PROJECT_ROOT / "artifacts"
+ARTIFACT_PATH = ARTIFACT_DIR / "crediwise_model.joblib"
 REPORT_DIR = PROJECT_ROOT / "reports"
 
 RANDOM_STATE = 42
 TEST_SIZE = 0.2
 N_SPLITS = 5
+SEARCH_ITERATIONS = 40
 
-#: Column holding the panel key. Each customer contributes 8 monthly rows, so
-#: every split in this project must be grouped on it -- see docs/AUDIT.md #11.
-GROUP_COL = "Customer_ID"
-TARGET_COL = "Credit_Score"
+#: The six months of history, most recent first. The source data covers
+#: April-September 2005 and the outcome is October 2005.
+MONTHS = ["sep", "aug", "jul", "jun", "may", "apr"]
 
-#: Ordinal target. Higher is better credit standing.
-TARGET_MAP = {"Poor": 0, "Standard": 1, "Good": 2}
-TARGET_LABELS = {v: k for k, v in TARGET_MAP.items()}
-
-#: Columns dropped before modelling, with the reason. Kept as data rather than
-#: a bare list so the model card can render it.
-DROPPED_COLUMNS = {
-    "ID": "row identifier, no predictive content",
-    "Customer_ID": "panel key -- used for grouping, never as a feature",
-    "Month": "artifact of the panel layout; costs nothing to drop (audit #6)",
-    "Age": "ECOA-protected basis; removal measured at -0.02pp (noise), "
-           "retained only as a fairness audit dimension (audit #18)",
-    "Type_of_Loan": "multi-hot encoding measured at -0.33pp macro-F1 during "
-                    "the audit; dropped on evidence (audit #16)",
+#: Source column names -> readable names. The source calls the most recent
+#: repayment status PAY_0 and skips PAY_1, which is easy to misread.
+RENAME = {
+    "LIMIT_BAL": "credit_limit",
+    "SEX": "sex",
+    "EDUCATION": "education",
+    "MARRIAGE": "marital_status",
+    "AGE": "age",
+    "default payment next month": "defaulted",
+    **{src: f"status_{m}" for src, m in
+       zip(["PAY_0", "PAY_2", "PAY_3", "PAY_4", "PAY_5", "PAY_6"], MONTHS)},
+    **{f"BILL_AMT{i}": f"bill_{m}" for i, m in enumerate(MONTHS, start=1)},
+    **{f"PAY_AMT{i}": f"paid_{m}" for i, m in enumerate(MONTHS, start=1)},
 }
 
-#: Values that stand in for "missing" in the raw file. Each was found by
-#: inspection of the source data; together they cover 49,955 cells.
-PLACEHOLDER_TOKENS = {
-    "Occupation": ["_______"],
-    "Payment_Behaviour": ["!@9#%8"],
-    "Credit_Mix": ["_"],
-    "Payment_of_Min_Amount": ["NM"],
-    "Changed_Credit_Limit": ["_"],
-}
+TARGET = "defaulted"
 
-#: Plausible ranges for numeric fields. Values outside these are treated as
-#: corrupt and set to NaN for imputation rather than silently trained on.
-#: The source data contains ages of -500 and 8698, interest rates of 5797%
-#: and 1798 bank accounts (audit #2).
-DOMAIN_RANGES = {
-    "Age": (18, 100),
-    "Annual_Income": (0, 1_000_000),
-    "Monthly_Inhand_Salary": (0, 100_000),
-    "Num_Bank_Accounts": (0, 20),
-    "Num_Credit_Card": (0, 20),
-    "Interest_Rate": (0, 50),
-    "Num_of_Loan": (0, 20),
-    "Delay_from_due_date": (0, 200),
-    "Num_of_Delayed_Payment": (0, 100),
-    "Num_Credit_Inquiries": (0, 50),
-    "Outstanding_Debt": (0, 500_000),
-    "Credit_Utilization_Ratio": (0, 100),
-    "Total_EMI_per_month": (0, 100_000),
-    "Amount_invested_monthly": (0, 100_000),
-    "Monthly_Balance": (-10_000, 1_000_000),
-    "Credit_History_Months": (0, 600),
-}
+STATUS = [f"status_{m}" for m in MONTHS]
+BILLS = [f"bill_{m}" for m in MONTHS]
+PAID = [f"paid_{m}" for m in MONTHS]
 
-#: Ordinal categoricals, mapped to integers that preserve their real order.
-ORDINAL_MAPS = {
-    "Credit_Mix": {"Bad": 0, "Standard": 1, "Good": 2},
-    "Payment_of_Min_Amount": {"No": 0, "Yes": 1},
-}
+#: What a lender holds for each customer: the limit it granted plus six months
+#: of statements, payments and repayment status.
+RAW_FEATURES = ["credit_limit"] + STATUS + BILLS + PAID
 
-#: Nominal categoricals. One-hot encoded -- LabelEncoder would impose a false
-#: ordering (audit #7).
-NOMINAL_FEATURES = ["Occupation", "Payment_Behaviour"]
-
-NUMERIC_FEATURES = [
-    "Annual_Income",
-    "Monthly_Inhand_Salary",
-    "Num_Bank_Accounts",
-    "Num_Credit_Card",
-    "Interest_Rate",
-    "Num_of_Loan",
-    "Delay_from_due_date",
-    "Num_of_Delayed_Payment",
-    "Changed_Credit_Limit",
-    "Num_Credit_Inquiries",
-    "Outstanding_Debt",
-    "Credit_Utilization_Ratio",
-    "Total_EMI_per_month",
-    "Amount_invested_monthly",
-    "Monthly_Balance",
-    "Credit_History_Months",
-    "Credit_Mix",
-    "Payment_of_Min_Amount",
+#: Summaries computed from the raw history (data.add_features). They add
+#: little accuracy to the boosted model (+0.002 CV AUC, within noise) but help
+#: a linear model a lot (+0.032), and they let declines cite plain reasons such
+#: as "months paid late" instead of a single month's status code.
+ENGINEERED_FEATURES = [
+    "utilization",
+    "avg_utilization",
+    "months_late",
+    "worst_status",
+    "paid_share",
 ]
 
-#: Features sourced from a credit bureau rather than the applicant or the
-#: lender's own records. `Credit_Mix` is a bureau-assigned assessment of credit
-#: quality, which makes predicting a credit band from it partly circular
-#: (audit #15). The model keeps it, but `--no-bureau` trains a variant without
-#: it so the dependency is quantified rather than hidden.
-BUREAU_FEATURES = ["Credit_Mix"]
+#: Model inputs. Credit behaviour only -- see PROTECTED below.
+FEATURES = RAW_FEATURES + ENGINEERED_FEATURES
 
-#: Trained model variants. Training saves each to its artifact and the API
-#: loads the one named by `MODEL_ENV_VAR`, both reading this table so the
-#: file names cannot drift apart. `include_bureau` is checked against the
-#: loaded model, so a file placed under the wrong name fails at startup.
-MODEL_VARIANTS = {
-    "full": {"artifact": "crediwise_model.joblib", "include_bureau": True},
-    "nobureau": {"artifact": "crediwise_model_nobureau.joblib", "include_bureau": False},
-}
-DEFAULT_MODEL_VARIANT = "full"
-MODEL_ENV_VAR = "CREDIWISE_MODEL"
+#: Never model inputs. Sex, marital status and age are protected under US
+#: fair-lending law (ECOA); including them measured at 0.7844 CV AUC against
+#: 0.7853 without, so excluding them costs nothing. Education added +0.0001
+#: and is a socioeconomic proxy, so it is excluded too. All four are kept for
+#: the fairness audit.
+PROTECTED = ["sex", "marital_status", "age"]
+AUDIT_DIMENSIONS = ["sex", "marital_status", "age_band", "education"]
 
+#: Documented category codes. Codes outside these (education 0/5/6, marital
+#: status 0) appear in the data but not in the documentation and are labelled
+#: "unknown" rather than guessed at.
+SEX_LABELS = {1: "male", 2: "female"}
+EDUCATION_LABELS = {1: "graduate_school", 2: "university", 3: "high_school", 4: "other"}
+MARITAL_LABELS = {1: "married", 2: "single", 3: "other"}
 
-def variant_for(include_bureau: bool) -> str:
-    return "full" if include_bureau else "nobureau"
-
-
-#: Protected and proxy attributes for the fairness audit. These are never model
-#: inputs. See docs/FAIRNESS.md for what this dataset cannot test.
-AUDIT_DIMENSIONS = ["age_band", "Occupation", "income_quintile"]
-
-AGE_BANDS = [(18, 25), (26, 35), (36, 45), (46, 55), (56, 100)]
+AGE_BANDS = [(21, 29), (30, 39), (40, 49), (50, 59), (60, 79)]

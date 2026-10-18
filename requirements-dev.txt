@@ -1,4 +1,10 @@
 -r requirements.txt
-pytest>=8,<9
+pytest>=8,<10
 httpx>=0.27,<1
+# Walkthrough notebook
+matplotlib>=3.8,<4
 jupyter>=1,<2
+nbconvert>=7,<8
+ipykernel>=6,<8
+# Data download (reads the source .xls)
+xlrd>=2,<3

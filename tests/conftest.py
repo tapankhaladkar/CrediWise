@@ -2,47 +2,43 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from crediwise import config as cfg
+
+def _raw_frame(n: int = 800, seed: int = 0) -> pd.DataFrame:
+    """A small frame in the exact source format, quirks included.
+
+    Default is made more likely by late payments so a model has signal to
+    find. Undocumented codes, a negative bill and a duplicate record are
+    planted so the cleaning code is exercised.
+    """
+    rng = np.random.default_rng(seed)
+    limit = rng.choice([20_000, 50_000, 120_000, 300_000], size=n)
+    lateness = rng.choice([-2, -1, 0, 0, 1, 2, 3], size=(n, 6))
+    bills = (rng.uniform(0, 1, size=(n, 6)) * limit[:, None]).round()
+    paid = (rng.uniform(0, 0.3, size=(n, 6)) * bills).round()
+    risk = 1 / (1 + np.exp(-(lateness.clip(min=0).sum(axis=1) - 3)))
+    df = pd.DataFrame({
+        "ID": np.arange(1, n + 1),
+        "LIMIT_BAL": limit,
+        "SEX": rng.choice([1, 2], size=n),
+        "EDUCATION": rng.choice([1, 2, 3, 4, 0, 5, 6], size=n,
+                                p=[.3, .4, .2, .04, .02, .02, .02]),
+        "MARRIAGE": rng.choice([1, 2, 3, 0], size=n, p=[.45, .5, .03, .02]),
+        "AGE": rng.integers(21, 75, size=n),
+    })
+    for i, name in enumerate(["PAY_0", "PAY_2", "PAY_3", "PAY_4", "PAY_5", "PAY_6"]):
+        df[name] = lateness[:, i]
+    for i in range(6):
+        df[f"BILL_AMT{i + 1}"] = bills[:, i]
+    for i in range(6):
+        df[f"PAY_AMT{i + 1}"] = paid[:, i]
+    df["default payment next month"] = (rng.uniform(size=n) < risk).astype(int)
+
+    df.loc[0, "BILL_AMT1"] = -5_000                 # credit balance, legitimate
+    dup = df.iloc[[1]].copy()
+    dup["ID"] = n + 1                               # same record, new ID
+    return pd.concat([df, dup], ignore_index=True)
 
 
 @pytest.fixture(scope="session")
 def raw_sample() -> pd.DataFrame:
-    """A small synthetic frame shaped like the real extract, dirt included."""
-    rng = np.random.default_rng(0)
-    n_customers, months = 40, 8
-    rows = []
-    for c in range(n_customers):
-        cid = f"CUS_{c:04d}"
-        income = float(rng.uniform(10_000, 90_000))
-        for m, name in enumerate(
-            ["January", "February", "March", "April", "May", "June", "July", "August"]
-        ):
-            rows.append({
-                "ID": f"0x{c*months+m:04x}",
-                "Customer_ID": cid,
-                "Month": name,
-                "Age": -500 if (c + m) % 17 == 0 else int(rng.integers(20, 70)),
-                "Occupation": "_______" if m == 2 else "Scientist",
-                "Annual_Income": f"{income}_" if m == 1 else income,
-                "Monthly_Inhand_Salary": np.nan if m == 3 else income / 12,
-                "Num_Bank_Accounts": 1798 if (c + m) % 23 == 0 else int(rng.integers(1, 8)),
-                "Num_Credit_Card": int(rng.integers(1, 8)),
-                "Interest_Rate": 5797 if (c + m) % 29 == 0 else int(rng.integers(1, 30)),
-                "Num_of_Loan": str(int(rng.integers(0, 6))),
-                "Type_of_Loan": "Auto Loan, and Home Equity Loan",
-                "Delay_from_due_date": int(rng.integers(0, 40)),
-                "Num_of_Delayed_Payment": str(int(rng.integers(0, 20))),
-                "Changed_Credit_Limit": "_" if m == 4 else round(float(rng.uniform(0, 30)), 2),
-                "Num_Credit_Inquiries": float(rng.integers(0, 12)),
-                "Credit_Mix": "_" if m == 5 else rng.choice(["Bad", "Standard", "Good"]),
-                "Outstanding_Debt": round(float(rng.uniform(0, 4000)), 2),
-                "Credit_Utilization_Ratio": round(float(rng.uniform(20, 45)), 4),
-                "Credit_History_Age": f"{int(rng.integers(1, 30))} Years and {m} Months",
-                "Payment_of_Min_Amount": "NM" if m == 6 else rng.choice(["Yes", "No"]),
-                "Total_EMI_per_month": round(float(rng.uniform(0, 400)), 4),
-                "Amount_invested_monthly": round(float(rng.uniform(0, 300)), 4),
-                "Payment_Behaviour": "!@9#%8" if m == 7 else "High_spent_Small_value_payments",
-                "Monthly_Balance": round(float(rng.uniform(100, 600)), 4),
-                "Credit_Score": rng.choice(["Poor", "Standard", "Good"]),
-            })
-    return pd.DataFrame(rows)
+    return _raw_frame()

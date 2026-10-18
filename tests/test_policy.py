@@ -1,34 +1,19 @@
-import numpy as np
+import pytest
 
-from crediwise.policy import DecisionPolicy, DEFAULT_COST_MATRIX
-
-
-def test_high_good_probability_approves():
-    policy = DecisionPolicy()
-    proba = np.array([[0.05, 0.15, 0.80]])
-    assert policy.decide(proba)[0]["decision"] == "approve"
+from crediwise.policy import DecisionPolicy
 
 
-def test_low_good_probability_declines_and_is_adverse():
-    policy = DecisionPolicy()
-    proba = np.array([[0.80, 0.15, 0.05]])
-    decision = policy.decide(proba)[0]
-    assert decision["decision"] == "decline"
-    assert decision["is_adverse"] is True
+def test_approve_threshold_follows_from_costs():
+    """Default costs 5x a lost customer -> approve while p < 1/6."""
+    assert DecisionPolicy().approve_below == pytest.approx(1 / 6)
+    assert DecisionPolicy(cost_default=3, cost_lost_customer=1).approve_below == pytest.approx(0.25)
 
 
-def test_middle_band_refers():
-    policy = DecisionPolicy()
-    proba = np.array([[0.30, 0.30, 0.40]])
-    assert policy.decide(proba)[0]["decision"] == "refer"
+def test_three_bands():
+    decisions = DecisionPolicy().decide([0.05, 0.166, 0.167, 0.49, 0.5, 0.95])
+    assert list(decisions) == ["approve", "approve", "refer", "refer", "decline", "decline"]
 
 
-def test_cost_matrix_penalises_approving_poor_applicants():
-    """Approving a true Poor must cost more than declining a true Good."""
-    assert DEFAULT_COST_MATRIX[0, 2] > DEFAULT_COST_MATRIX[2, 0]
-
-
-def test_expected_cost_shape():
-    policy = DecisionPolicy()
-    proba = np.array([[0.2, 0.3, 0.5], [0.7, 0.2, 0.1]])
-    assert policy.expected_cost(proba).shape == (2, 3)
+def test_inconsistent_thresholds_are_rejected():
+    with pytest.raises(ValueError):
+        DecisionPolicy(cost_default=1, cost_lost_customer=5, decline_at=0.5)
