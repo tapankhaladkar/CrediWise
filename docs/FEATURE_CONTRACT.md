@@ -71,8 +71,8 @@ HTTP 422
     "error": "missing_bureau_input",
     "missing": ["Credit_Mix"],
     "message": "The served model requires Credit_Mix, a bureau-supplied input,
-                and will not impute it. Supply it, or score against a model
-                trained with --no-bureau."
+                and will not impute it. Supply it, or use a deployment
+                serving the no-bureau model (CREDIWISE_MODEL=nobureau)."
   }
 }
 ```
@@ -81,11 +81,44 @@ The requirement is read from the served model's own feature list, not
 hard-coded. A model trained with `--no-bureau` does not require the field and
 ignores it if sent.
 
-If a deployment cannot obtain a bureau credit-mix rating before scoring, serve
-the `--no-bureau` variant and accept the cost above. **Current limitation:**
-the API loads one fixed artifact, `artifacts/crediwise_model.joblib`, so
-serving the variant today means placing the no-bureau model at that path.
-Configurable model selection is an open item.
+## Choosing which model a deployment serves
+
+Each deployment serves exactly one variant, set by `CREDIWISE_MODEL`:
+
+| `CREDIWISE_MODEL` | Artifact | Requires `Credit_Mix` | Build | Serve |
+|---|---|---|---|---|
+| `full` (default) | `crediwise_model.joblib` | Yes | `make train` | `make serve` |
+| `nobureau` | `crediwise_model_nobureau.joblib` | No | `make train-nobureau` | `make serve-nobureau` |
+
+If a deployment cannot obtain a bureau credit-mix rating before scoring, run
+it with `CREDIWISE_MODEL=nobureau` and accept the cost above. In Docker:
+`docker run -e CREDIWISE_MODEL=nobureau ...`.
+
+`GET /health` reports the variant, the model version and the fields `/score`
+requires, so a caller can discover whether to send `Credit_Mix`. Every
+`/score` response carries `model_variant` and `model_version`, so each
+decision records which model made it. `model_version` is a hash of the model
+file, not a hand-maintained number, so it changes whenever the model does.
+
+Startup fails loudly rather than guessing:
+
+- **Unknown value** (e.g. `no-bureau`): the server does not start. Falling
+  back to the full model would leave a deployment believing it needs no
+  bureau data while rejecting every request that lacks it.
+- **Wrong model under a variant's file name** (e.g. the full model copied to
+  `crediwise_model_nobureau.joblib`): the server does not start.
+- **Artifact not built yet**: the server starts degraded; `/health` says so
+  and `/score` returns 503 naming the file and the `make` target that builds
+  it.
+
+**Routing by field is deliberately not supported.** Sending requests that
+lack `Credit_Mix` to the no-bureau model automatically is tempting, but those
+applicants are disproportionately thin-file: younger people and recent
+immigrants. They would all be scored by the model whose Good-class recall is
+0.491 rather than 0.652, a two-tier system along age and national origin,
+both protected bases. Before routing is safe, the no-bureau approve threshold
+needs re-tuning (its AUC is nearly intact, so much of that recall looks
+recoverable) and the fairness audit needs running on the routed population.
 
 ## Deliberate exclusions
 
@@ -108,7 +141,8 @@ Configurable model selection is an open item.
   "is_adverse": false,
   "cost_optimal_band": "Standard",
   "reason_codes": [],
-  "model_version": "0.2.0",
+  "model_variant": "full",
+  "model_version": "sha256:6928ed310403",
   "disclaimer": "..."
 }
 ```

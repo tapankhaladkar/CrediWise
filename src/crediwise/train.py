@@ -126,10 +126,12 @@ def run(include_bureau: bool = True, demo_leakage: bool = False) -> dict:
     policy = DecisionPolicy()
     decisions = policy.decide(proba_cal[:5])
 
+    variant = cfg.variant_for(include_bureau)
     bundle = {
         "pipeline": uncalibrated,
         "calibrated": calibrated,
         "policy": policy,
+        "variant": variant,
         "include_bureau": include_bureau,
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "feature_columns": list(X.columns),
@@ -137,7 +139,7 @@ def run(include_bureau: bool = True, demo_leakage: bool = False) -> dict:
         "test_macro_f1": metrics["calibrated"]["macro_f1"],
     }
     suffix = "" if include_bureau else "_nobureau"
-    model_path = cfg.ARTIFACT_DIR / f"crediwise_model{suffix}.joblib"
+    model_path = cfg.ARTIFACT_DIR / cfg.MODEL_VARIANTS[variant]["artifact"]
     joblib.dump(bundle, model_path, compress=3)
     print(f"  saved {model_path.name} "
           f"({model_path.stat().st_size / 1e6:.1f} MB)")

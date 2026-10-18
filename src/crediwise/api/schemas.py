@@ -95,12 +95,20 @@ class ScoreResponse(BaseModel):
         description="Principal factors driving an adverse outcome "
                     "(ECOA 12 CFR 1002.9). Populated when is_adverse is true.",
     )
-    model_version: str
+    model_variant: str = Field(description="Which trained model scored this "
+                               "request: full or nobureau")
+    model_version: str = Field(description="Content hash of the model file, "
+                               "identifying the exact model that decided")
     disclaimer: str
 
 
 class HealthResponse(BaseModel):
     status: str
     model_loaded: bool
+    model_variant: str | None = Field(
+        None, description="Variant this deployment is configured to serve, "
+                          "reported even when its artifact is missing")
     model_version: str | None = None
     trained_at: str | None = None
+    required_bureau_inputs: list[str] | None = Field(
+        None, description="Fields /score will reject a request for omitting")

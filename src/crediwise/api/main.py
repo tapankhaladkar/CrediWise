@@ -1,15 +1,26 @@
 """FastAPI scoring service.
 
     uvicorn crediwise.api.main:app --port 8000
+    CREDIWISE_MODEL=nobureau uvicorn crediwise.api.main:app --port 8000
 
 Serves calibrated probabilities, a decision from the policy layer, and reason
 codes for adverse outcomes. Requires a trained artifact -- run `make train`
-first.
+(or `make train-nobureau`) first.
+
+Each deployment serves exactly one model variant, chosen by the
+`CREDIWISE_MODEL` environment variable (default `full`). Routing requests
+between variants by which fields they carry is deliberately not supported:
+applicants without bureau data are disproportionately thin-file, and sending
+them all to the weaker no-bureau model would create a two-tier system along
+protected lines. See docs/FEATURE_CONTRACT.md.
 """
 
 from __future__ import annotations
 
+import hashlib
+import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import joblib
 import pandas as pd
@@ -25,20 +36,81 @@ DISCLAIMER = (
     "for a compliant adverse-action process."
 )
 
-STATE: dict = {"bundle": None, "explainer": None}
+STATE: dict = {"bundle": None, "explainer": None, "variant": None,
+               "model_version": None}
 
 
-def _artifact_path():
-    return cfg.ARTIFACT_DIR / "crediwise_model.joblib"
+def required_bureau_inputs(bundle: dict) -> list[str]:
+    """Bureau features the loaded model was trained on.
+
+    Derived from the model's own feature list rather than hard-coded, so a
+    deployment serving the `--no-bureau` variant does not demand them.
+    """
+    return [c for c in cfg.BUREAU_FEATURES if c in bundle["feature_columns"]]
+
+
+def selected_variant() -> str:
+    """The model variant this deployment is configured to serve.
+
+    An unrecognised value raises rather than falling back to the default: a
+    deployment that believes it serves the no-bureau model while actually
+    serving the full one is the misconfiguration this setting exists to
+    prevent.
+    """
+    raw = os.environ.get(cfg.MODEL_ENV_VAR, cfg.DEFAULT_MODEL_VARIANT)
+    value = raw.strip().lower()
+    if value not in cfg.MODEL_VARIANTS:
+        raise ValueError(
+            f"{cfg.MODEL_ENV_VAR}={raw!r} is not a known model variant. "
+            f"Use one of: {', '.join(cfg.MODEL_VARIANTS)}."
+        )
+    return value
+
+
+def artifact_path(variant: str) -> Path:
+    return cfg.ARTIFACT_DIR / cfg.MODEL_VARIANTS[variant]["artifact"]
+
+
+def _file_version(path: Path) -> str:
+    """Content hash of the artifact: identifies the exact model served."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()[:12]}"
 
 
 def load_model() -> None:
-    path = _artifact_path()
+    """Load the configured variant.
+
+    A missing artifact leaves the service up but degraded (/health says so,
+    /score returns 503). An artifact whose contents contradict its variant --
+    say, the full model copied to the no-bureau file name -- fails startup.
+    """
+    variant = selected_variant()
+    STATE.update(bundle=None, explainer=None, variant=variant, model_version=None)
+
+    path = artifact_path(variant)
     if not path.exists():
         return
     bundle = joblib.load(path)
-    STATE["bundle"] = bundle
-    STATE["explainer"] = Explainer(bundle["pipeline"])
+
+    expects_bureau = cfg.MODEL_VARIANTS[variant]["include_bureau"]
+    has_bureau = bool(required_bureau_inputs(bundle))
+    if has_bureau != expects_bureau:
+        raise RuntimeError(
+            f"{path.name} {'uses' if has_bureau else 'does not use'} bureau "
+            f"inputs, but {cfg.MODEL_ENV_VAR}={variant} expects a model that "
+            f"{'does' if expects_bureau else 'does not'}. The file is probably "
+            f"the wrong variant; retrain with "
+            f"`make {'train' if expects_bureau else 'train-nobureau'}`."
+        )
+
+    STATE.update(
+        bundle=bundle,
+        explainer=Explainer(bundle["pipeline"]),
+        model_version=_file_version(path),
+    )
 
 
 @asynccontextmanager
@@ -63,18 +135,11 @@ def health() -> HealthResponse:
     return HealthResponse(
         status="ok" if bundle else "degraded",
         model_loaded=bundle is not None,
-        model_version=None if not bundle else "0.2.0",
+        model_variant=STATE.get("variant"),
+        model_version=STATE.get("model_version"),
         trained_at=None if not bundle else bundle.get("trained_at"),
+        required_bureau_inputs=None if not bundle else required_bureau_inputs(bundle),
     )
-
-
-def required_bureau_inputs(bundle: dict) -> list[str]:
-    """Bureau features the loaded model was trained on.
-
-    Derived from the model's own feature list rather than hard-coded, so a
-    deployment serving the `--no-bureau` variant does not demand them.
-    """
-    return [c for c in cfg.BUREAU_FEATURES if c in bundle["feature_columns"]]
 
 
 @app.post("/score", response_model=ScoreResponse)
@@ -87,9 +152,14 @@ def score(applicant: Applicant) -> ScoreResponse:
     """
     bundle = STATE.get("bundle")
     if bundle is None:
+        variant = STATE.get("variant") or cfg.DEFAULT_MODEL_VARIANT
         raise HTTPException(
             status_code=503,
-            detail="No trained model available. Run `make train` first.",
+            detail=(
+                f"No trained model for variant '{variant}': expected "
+                f"artifacts/{cfg.MODEL_VARIANTS[variant]['artifact']}. Run "
+                f"`make {'train' if variant == 'full' else 'train-nobureau'}` first."
+            ),
         )
 
     # docs/FEATURE_CONTRACT.md: never serve the full model with Credit_Mix
@@ -107,7 +177,8 @@ def score(applicant: Applicant) -> ScoreResponse:
                 "message": (
                     f"The served model requires {', '.join(missing)}, a "
                     "bureau-supplied input, and will not impute it. Supply "
-                    "it, or score against a model trained with --no-bureau."
+                    "it, or use a deployment serving the no-bureau model "
+                    f"({cfg.MODEL_ENV_VAR}=nobureau)."
                 ),
             },
         )
@@ -132,6 +203,7 @@ def score(applicant: Applicant) -> ScoreResponse:
         is_adverse=decision["is_adverse"],
         cost_optimal_band=decision["cost_optimal_band"],
         reason_codes=reasons,
-        model_version="0.2.0",
+        model_variant=STATE["variant"],
+        model_version=STATE["model_version"],
         disclaimer=DISCLAIMER,
     )

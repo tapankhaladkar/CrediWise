@@ -1,4 +1,4 @@
-.PHONY: install train train-nobureau test serve docker clean
+.PHONY: install train train-nobureau test serve serve-nobureau docker clean
 
 install:
 	pip install -r requirements-dev.txt && pip install -e .
@@ -15,6 +15,10 @@ test:
 
 serve:
 	PYTHONPATH=src uvicorn crediwise.api.main:app --reload --port 8000
+
+# For deployments with no bureau credit-mix rating at scoring time.
+serve-nobureau:
+	CREDIWISE_MODEL=nobureau PYTHONPATH=src uvicorn crediwise.api.main:app --reload --port 8000
 
 docker:
 	docker build -t crediwise:latest .

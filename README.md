@@ -60,6 +60,12 @@ make test       # 28 tests
 make serve      # FastAPI on :8000, docs at /docs
 ```
 
+Lenders without a bureau credit-mix rating at scoring time serve the
+no-bureau model instead: `make train-nobureau && make serve-nobureau` (or
+`CREDIWISE_MODEL=nobureau`). The full model rejects requests that omit
+`Credit_Mix` rather than guessing it; see
+[`docs/FEATURE_CONTRACT.md`](docs/FEATURE_CONTRACT.md).
+
 Scoring an applicant:
 
 ```bash

@@ -13,6 +13,12 @@ COPY src/ ./src/
 RUN mkdir -p ./artifacts
 
 ENV PYTHONPATH=/app/src
+
+# Which trained model this container serves: full (default) or nobureau.
+# Override at run time, e.g. `docker run -e CREDIWISE_MODEL=nobureau ...`.
+# An unknown value stops the container at startup rather than falling
+# back to the full model.
+ENV CREDIWISE_MODEL=full
 EXPOSE 8000
 
 CMD ["uvicorn", "crediwise.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

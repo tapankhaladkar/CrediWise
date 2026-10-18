@@ -109,6 +109,22 @@ NUMERIC_FEATURES = [
 #: it so the dependency is quantified rather than hidden.
 BUREAU_FEATURES = ["Credit_Mix"]
 
+#: Trained model variants. Training saves each to its artifact and the API
+#: loads the one named by `MODEL_ENV_VAR`, both reading this table so the
+#: file names cannot drift apart. `include_bureau` is checked against the
+#: loaded model, so a file placed under the wrong name fails at startup.
+MODEL_VARIANTS = {
+    "full": {"artifact": "crediwise_model.joblib", "include_bureau": True},
+    "nobureau": {"artifact": "crediwise_model_nobureau.joblib", "include_bureau": False},
+}
+DEFAULT_MODEL_VARIANT = "full"
+MODEL_ENV_VAR = "CREDIWISE_MODEL"
+
+
+def variant_for(include_bureau: bool) -> str:
+    return "full" if include_bureau else "nobureau"
+
+
 #: Protected and proxy attributes for the fairness audit. These are never model
 #: inputs. See docs/FAIRNESS.md for what this dataset cannot test.
 AUDIT_DIMENSIONS = ["age_band", "Occupation", "income_quintile"]
